@@ -53,7 +53,34 @@ public  :: NLCGsolver
 
   type(NLCGiterControl_t), private, save :: iterControl
 
+  interface to_string
+     module procedure to_string_real
+     module procedure to_string_int
+  end interface to_string
+
 Contains
+
+!**********************************************************************
+   function to_string_real(x) result(str)
+      real(kind=prec), intent(in) :: x
+      character(len=32) :: str
+      write (str, '(es12.5)') x
+   end function to_string_real
+
+!**********************************************************************
+   function to_string_variable(x, fmt) result(str)
+      real(kind=prec), intent(in) :: x
+      character(len=7), intent(in) :: fmt
+      character(len=32) :: str
+      write (str, fmt) x
+   end function to_string_variable
+
+!**********************************************************************
+   function to_string_int(i) result(str)
+      integer, intent(in) :: i
+      character(len=12) :: str
+      write (str, '(i0)') i
+   end function to_string_int
 
 !**********************************************************************
    subroutine set_NLCGiterControl(iterControl)
@@ -252,7 +279,7 @@ Contains
    real(kind=prec)                              :: gnorm, mNorm, Nmodel
    real(kind=prec)                              :: grad_dot_h, g_dot_g
    real(kind=prec)                              :: g_dot_gPrev,g_dot_h
-   real(kind=prec)                              :: gPrev_dot_gPrev 
+   real(kind=prec)                              :: gPrev_dot_gPrev
    real(kind=prec)                              :: h_dot_g, h_dot_gPrev
    integer                                      :: iter, nCG, nLS, nfunc, ios
    logical                                      :: ok
@@ -281,8 +308,12 @@ Contains
    write(*,'(a41,es8.1)') 'The initial damping parameter lambda is ',lambda
    write(*,'(a55,f12.6)') 'The initial line search step size (in model units) is ',startdm
 
-   write(ioLog,'(a41,es8.1)') 'The initial damping parameter lambda is ',lambda
-   write(ioLog,'(a55,f12.6)') 'The initial line search step size (in model units) is ',startdm
+   call logLine('------------------------------------------------------------------------------------------------', logFile)
+   call logLine('Starting New Inversion', logFile)
+   call logLine('------------------------------------------------------------------------------------------------', logFile)
+   call logLine('The initial damping parameter lambda is '//trim(adjustl(to_string_variable(lambda,'(es8.1)'))), logFile)
+   call logLine('The initial line search step size (in model units) is '// &
+      trim(adjustl(to_string_variable(startdm,'(f12.6)'))), logFile)
 
 
    ! starting from the prior hardcoded by setting mHat = 0 and m = m0
@@ -296,7 +327,7 @@ Contains
    !  compute the penalty functional and predicted data
    call func(lambda,d,m0,mHat,value,mNorm,dHat,eAll,rms)
    call printf('START',lambda,alpha,value,mNorm,rms)
-   call printf('START',lambda,alpha,value,mNorm,rms,logFile)
+   call logprintf('START',lambda,alpha,value,mNorm,rms,logFile)
    nfunc = 1
 
    write(iterChar,'(i3.3)') 0
@@ -322,13 +353,15 @@ Contains
    ! update the initial value of alpha if necessary
    gnorm = sqrt(dotProd(grad,grad))
    write(*,'(a42,es12.5)') '    GRAD: initial norm of the gradient is',gnorm
-   write(ioLog,'(a42,es12.5)') '     GRAD: initial norm of the gradient is',gnorm
+   call logLine('     GRAD: initial norm of the gradient is '// &
+      trim(adjustl(to_string_real(gnorm))), logFile)
    if (gnorm < TOL6) then
       call errStop('Problem with your gradient computations: first gradient is zero')
    else !if (alpha * gnorm > startdm) then
       alpha = startdm / gnorm
       write(*,'(a39,es12.5)') 'The initial value of alpha updated to ',alpha
-      write(ioLog,'(a39,es12.5)') 'The initial value of alpha updated to ',alpha
+      call logLine('The initial value of alpha updated to '// &
+         trim(adjustl(to_string_real(alpha))), logFile)
    end if
 
    ! initialize CG: g = - grad; h = g
@@ -356,7 +389,9 @@ Contains
 	  ! mHat = mHat + alpha*h  and evaluate gradient at new mHat
 	  ! data and solnVector only needed for output
       write(*,'(a23)') 'Starting line search...'
-      write(ioLog,'(a23)') 'Starting line search...'
+      call logLine('------------------------------------------------------------------------------------------------', logFile)
+      call logLine('NLCG Iteration '//trim(adjustl(to_string_int(iter)))// &
+         ': Starting line search...', logFile)
 	  select case (flavor)
 	  case ('Cubic')
           call lineSearchCubic(lambda,d,m0,h,alpha,mHat,value,grad,rms,nLS,dHat,eAll)
@@ -380,7 +415,8 @@ Contains
 	  ! adjust the starting step to ensure superlinear convergence properties
 	  alpha = (ONE+0.01)*alpha
 	  write(*,'(a25,i5)') 'Completed NLCG iteration ',iter
-	  write(ioLog,'(a25,i5)') 'Completed NLCG iteration ',iter
+      call logLine('Completed NLCG iteration '// &
+         trim(adjustl(to_string_int(iter))), logFile)
 
       call ModEM_timers_stop("NLCG Iteration", .false.)
       call ModEM_timers_print("NLCG Iteration", ioLog)
@@ -388,7 +424,7 @@ Contains
 	  Nmodel = countModelParam(mHat)
 	  mNorm = dotProd(mHat,mHat)/Nmodel
       call printf('with',lambda,alpha,value,mNorm,rms)
-      call printf('with',lambda,alpha,value,mNorm,rms,logFile)
+      call logprintf('with',lambda,alpha,value,mNorm,rms,logFile)
 
       ! write out the intermediate model solution and responses
       if (mod(iter, iterControl%nskip).eq.0) then
@@ -419,34 +455,36 @@ Contains
       ! if alpha is too small, we are not making progress: update lambda
       ! the default criteria is on rms only
       if (abs(rmsPrev - rms) < iterControl%fdiffTol) then
-      ! I would recommend using this (object function) instead 
+      ! I would recommend using this (object function) instead
       ! if ((valuePrev-value)/value < iterControl%fdiffTol) then
           ! update lambda, penalty functional and gradient
           call update_damping_parameter(lambda,mHat,value,grad)
           ! check that lambda is still at a reasonable value
           if (lambda < iterControl%lambdaTol) then
               write(*,'(a55)') 'Unable to get out of a local minimum. Exiting...'
-              write(ioLog,'(a55)') 'Unable to get out of a local minimum. Exiting...'
+              call logLine('Unable to get out of a local minimum. Exiting...', logFile)
               exit
           end if
           ! update alpha
           gnorm = sqrt(dotProd(grad,grad))
           write(*,'(a34,es12.5)') 'The norm of the last gradient is ',gnorm
-          write(ioLog,'(a34,es12.5)') 'The norm of the last gradient is ',gnorm
+          call logLine('The norm of the last gradient is '// &
+             trim(adjustl(to_string_real(gnorm))), logFile)
           !alpha = min(iterControl%alpha_1,startdm/gnorm)
           alpha = min(ONE,startdm)/gnorm
           write(*,'(a48,es12.5)') 'The value of line search step alpha updated to ',alpha
-          write(ioLog,'(a48,es12.5)') 'The value of line search step alpha updated to ',alpha
+          call logLine('The value of line search step alpha updated to '// &
+             trim(adjustl(to_string_real(alpha))), logFile)
           ! g = - grad
           call linComb(MinusONE,grad,R_ZERO,grad,g)
           ! restart
           write(*,'(a55)') 'Restarting NLCG with the damping parameter updated'
           call printf('to',lambda,alpha,value,mNorm,rms)
-          write(ioLog,'(a55)') 'Restarting NLCG with the damping parameter updated'
-          call printf('to',lambda,alpha,value,mNorm,rms,logFile)
+          call logLine('Restarting NLCG with the damping parameter updated', logFile)
+          call logprintf('to',lambda,alpha,value,mNorm,rms,logFile)
           h = g
           nCG = 0
-          cycle  
+          cycle
       end if
 
       g_dot_g = dotProd(g,g)
@@ -468,7 +506,7 @@ Contains
           .and. (nCG .ge. iterControl%nCGmax)) then !PR
           ! restart
           write(*,'(a45)') 'Restarting NLCG to restore orthogonality'
-          write(ioLog,'(a45)') 'Restarting NLCG to restore orthogonality'
+          call logLine('Restarting NLCG to restore orthogonality', logFile)
           nCG = 0
           beta = R_ZERO
       else
@@ -482,7 +520,8 @@ Contains
    call linComb(ONE,m_minus_m0,ONE,m0,m)
    d = dHat
    write(*,'(a25,i5,a25,i5)') 'NLCG iterations:',iter,' function evaluations:',nfunc
-   write(ioLog,'(a25,i5,a25,i5)') 'NLCG iterations:',iter,' function evaluations:',nfunc
+   call logLine('NLCG iterations: '//trim(adjustl(to_string_int(iter)))// &
+      ' function evaluations: '//trim(adjustl(to_string_int(nfunc))), logFile)
    close(ioLog,iostat=ios)
 
    ! cleaning up
@@ -607,7 +646,7 @@ Contains
    !  compute the penalty functional and predicted data at mHat_1
    call func(lambda,d,m0,mHat_1,f_1,mNorm_1,dHat_1,eAll_1,rms_1)
    call printf('STARTLS',lambda,alpha,f_1,mNorm_1,rms_1)
-   call printf('STARTLS',lambda,alpha,f_1,mNorm_1,rms_1,logFile)
+   call logprintf('STARTLS',lambda,alpha,f_1,mNorm_1,rms_1,logFile)
    niter = niter + 1
 
    if (f_1 - f_0 >= LARGE_REAL) then
@@ -636,12 +675,12 @@ Contains
     call linComb(ONE,mHat_0,alpha,h,mHat)
     call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
     call printf('QUADLS',lambda,alpha,f,mNorm,rms)
-    call printf('QUADLS',lambda,alpha,f,mNorm,rms,logFile)
+    call logprintf('QUADLS',lambda,alpha,f,mNorm,rms,logFile)
     niter = niter + 1
     ! check whether the solution satisfies the sufficient decrease condition
     if (f < f_0 + c * alpha * g_0) then
         write(*,'(a60)') 'Good enough value found, exiting line search'
-        write(ioLog,'(a60)') 'Good enough value found, exiting line search'
+        call logLine('Good enough value found, exiting line search', logFile)
     	exit
     end if
     ! this should not happen, but in practice it is possible to end up with
@@ -650,7 +689,7 @@ Contains
     ! In this case, we avoid an infinite loop by exiting the line search.
     if (f > f_0) then
         write(*,'(a75)') 'Unable to fit a quadratic due to bad gradient estimate, exiting line search'
-        write(ioLog,'(a75)') 'Unable to fit a quadratic due to bad gradient estimate, exiting line search'
+        call logLine('Unable to fit a quadratic due to bad gradient estimate, exiting line search', logFile)
    		exit
     end if
     ! otherwise, iterate, using the most recent value of f & alpha
@@ -677,11 +716,11 @@ Contains
    		call linComb(ONE,mHat_0,gamma*alpha,h,mHat)
     	call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
    		call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms)
-   		call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
+   		call logprintf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
    	end if
     call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
     write(*,'(a39)') 'Gradient computed, line search finished'
-    write(ioLog,'(a39)') 'Gradient computed, line search finished'
+    call logLine('Gradient computed, line search finished', logFile)
 
    call deall_dataVectorMTX(dHat_1)
    call deall_modelParam(mHat_0)
@@ -796,7 +835,7 @@ Contains
    call linComb(ONE,mHat_0,alpha_1,h,mHat_1)
    call func(lambda,d,m0,mHat_1,f_1,mNorm_1,dHat_1,eAll_1,rms_1)
    call printf('STARTLS',lambda,alpha,f_1,mNorm_1,rms_1)
-   call printf('STARTLS',lambda,alpha,f_1,mNorm_1,rms_1,logFile)
+   call logprintf('STARTLS',lambda,alpha,f_1,mNorm_1,rms_1,logFile)
    niter = niter + 1
 
 	 if (f_1 - f_0 >= LARGE_REAL) then
@@ -820,11 +859,11 @@ Contains
    	call linComb(ONE,mHat_0,gamma*alpha,h,mHat)
     	call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
    	call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms)
-   	call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
+   	call logprintf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
    	end if
     call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
     write(*,'(a45)') 'Quadratic has no minimum, exiting line search'
-    write(ioLog,'(a45)') 'Quadratic has no minimum, exiting line search'
+    call logLine('Quadratic has no minimum, exiting line search', logFile)
 	call deall_dataVectorMTX(dHat_1)
 	call deall_modelParam(mHat_0)
 	call deall_modelParam(mHat_1)
@@ -837,7 +876,7 @@ Contains
    call linComb(ONE,mHat_0,alpha,h,mHat)
    call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
    call printf('QUADLS',lambda,alpha,f,mNorm,rms)
-   call printf('QUADLS',lambda,alpha,f,mNorm,rms,logFile)
+   call logprintf('QUADLS',lambda,alpha,f,mNorm,rms,logFile)
    niter = niter + 1
    ! check whether the solution satisfies the sufficient decrease condition
    if (f < f_0 + c * alpha * g_0) then
@@ -856,12 +895,12 @@ Contains
    		call linComb(ONE,mHat_0,gamma*alpha,h,mHat)
     	call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
    		call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms)
-   		call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
+   		call logprintf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
    	end if
 
     call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
     write(*,'(a60)') 'Sufficient decrease condition satisfied, exiting line search'
-    write(ioLog,'(a60)') 'Sufficient decrease condition satisfied, exiting line search'
+    call logLine('Sufficient decrease condition satisfied, exiting line search', logFile)
 	call deall_dataVectorMTX(dHat_1)
 	call deall_modelParam(mHat_0)
 	call deall_modelParam(mHat_1)
@@ -879,7 +918,7 @@ Contains
    if (f > f_0) then
 
     write(*,'(a75)') 'Unable to fit a quadratic due to bad gradient estimate, exiting line search'
-    write(ioLog,'(a75)') 'Unable to fit a quadratic due to bad gradient estimate, exiting line search'
+    call logLine('Unable to fit a quadratic due to bad gradient estimate, exiting line search', logFile)
 
    else
     ! fit a cubic and backtrack (initialize)
@@ -903,7 +942,7 @@ Contains
         call linComb(ONE,mHat_0,alpha,h,mHat)
         call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
         call printf('CUBICLS',lambda,alpha,f,mNorm,rms)
-        call printf('CUBICLS',lambda,alpha,f,mNorm,rms,logFile)
+        call logprintf('CUBICLS',lambda,alpha,f,mNorm,rms,logFile)
         niter = niter + 1
         ! check whether the solution satisfies the sufficient decrease condition
         if (f < f_0 + c * alpha * g_0) then
@@ -917,7 +956,7 @@ Contains
         ! check that the function still decreases to avoid infinite loops in case of a bug
         if (abs(f_j - f_i) < TOL8) then
            write(*,'(a69)') 'Warning: exiting cubic search since the function no longer decreases!'
-           write(ioLog,'(a69)') 'Warning: exiting cubic search since the function no longer decreases!'
+           call logLine('Warning: exiting cubic search since the function no longer decreases!', logFile)
     	   exit
         end if
     end do fit_cubic
@@ -942,11 +981,11 @@ Contains
    		call linComb(ONE,mHat_0,gamma*alpha,h,mHat)
     	call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
    		call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms)
-   		call printf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
+   		call logprintf('RELAX',lambda,gamma*alpha,f,mNorm,rms,logFile)
    	end if
     call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
 	write(*,'(a39)') 'Gradient computed, line search finished'
-    write(ioLog,'(a39)') 'Gradient computed, line search finished'
+    call logLine('Gradient computed, line search finished', logFile)
 
    call deall_dataVectorMTX(dHat_1)
    call deall_modelParam(mHat_0)
@@ -958,24 +997,24 @@ Contains
   !**********************************************************************
   subroutine lineSearchWolfe(lambda,d,m0,h,alpha,mHat,f,grad, &
    & rms,niter,dHat,eAll)
- 
+
    ! Contributed by Hao Dong
-   
-   ! Note: inexact line searches ultimately fit into two catalogs - 
+
+   ! Note: inexact line searches ultimately fit into two catalogs -
    ! i.e. Armijo–Goldstein (back-tracking) and Wolfe conditions
-   ! the latter also contains a few different criterias: (1) "Armijo 
-   ! rule", and (2) "curvature condition", the latter requires an extra 
+   ! the latter also contains a few different criterias: (1) "Armijo
+   ! rule", and (2) "curvature condition", the latter requires an extra
    ! gradient calculation at x_k + alpha_k*d_k
-   ! (1) and modified (2) will form the "strong Wolfe" condition which is 
+   ! (1) and modified (2) will form the "strong Wolfe" condition which is
    ! the line search "convergence criteria" here
 
-   ! Original Line search code here (by Anna) was based on the Numerical 
-   ! Recipes and on the text by Michael Ferris, Chapter 3, p 59. 
-   ! which is about the sufficient decrease (Armijo) condition 
+   ! Original Line search code here (by Anna) was based on the Numerical
+   ! Recipes and on the text by Michael Ferris, Chapter 3, p 59.
+   ! which is about the sufficient decrease (Armijo) condition
    ! (ignoring the curvature condition).
    ! first interpolate using a quadratic approximation; if the
    ! solution does not satisfy the condition, then backtrack using
-   ! cubic interpolation. 
+   ! cubic interpolation.
    !
    ! The initial step size is set outside of this routine (in the LBFGS)
    ! but these are the good choices (ref. Michael Ferris, Chapter 3, p 59):
@@ -1005,40 +1044,40 @@ Contains
    !
    ! This good part is this strategy only requires one gradient
    ! evaluation and is very efficient when computing gradients is
-   ! expensive (as with EM). 
+   ! expensive (as with EM).
    !
    !
    ! but hey, penalty function evaluation is equally (if not more) expensive
-   ! , and we need to calculate the gradient function for the next search 
-   ! direction anyway - sooner or later, so here is my idea: 
+   ! , and we need to calculate the gradient function for the next search
+   ! direction anyway - sooner or later, so here is my idea:
    !
    ! when we have evaluated the penalty function for the initial guess (f_1)
    ! and quadratic interpolation (f)
    ! 1) if f < f_1, we just continue to calculate the gradient at the
    !    quadratic interpolation point, and use it to test the Wolfe condition
-   !    if it satisfies, then the calculation is the same as Anna's scheme 
+   !    if it satisfies, then the calculation is the same as Anna's scheme
    !    2 penalty funtion evaluations and 1 gradient = 2 FWDs and 1 TRN
    ! 2) if f_1 < f, we do the same as 1), but only calculate grad at initial
    !    guess, still the calculation will be the same if everything works
    !    i.e. 2 FWDs and 1 TRN
-   ! 3) if none of the 1) and 2) satisfied, the scheme falls back to the 
+   ! 3) if none of the 1) and 2) satisfied, the scheme falls back to the
    !    More-Thunente scheme, the reason I didn't use a backtracking scheme
    !    like in Anna's Cubic subroutine, is the fact that a step length
-   !    greater than alpha_1 may be needed to satisfy Wolfe's condition 
+   !    greater than alpha_1 may be needed to satisfy Wolfe's condition
    !    (so "back"tracking may not be enough)
-    
+
    ! in practise, this almost always gets identical result with Anna's cubic
    ! search scheme - for the first hundred iterations
    !
    ! following Anna's idea, the major intention here is to use a cheap line
-   ! search scheme (with only 3 forward-like-calculations) to quickly skip 
+   ! search scheme (with only 3 forward-like-calculations) to quickly skip
    ! to a small overall penalty function level and only to start bracketing
-   ! when the quadratic interpolation doesn't work, in which case cubic 
+   ! when the quadratic interpolation doesn't work, in which case cubic
    ! probably won't work either...
-   ! 
-   ! the real motivation, however, is try to implement Strong Wolfe condition 
+   !
+   ! the real motivation, however, is try to implement Strong Wolfe condition
    ! to prepare for L-BFGS method -
-   ! as the standard Armijio backtracking method, which ignores the curvature 
+   ! as the standard Armijio backtracking method, which ignores the curvature
    ! condition, cannot guarantee the stable converge of quasi-Newton-ish method
 
    real(kind=prec), intent(in)               :: lambda ! lagrange multiplier
@@ -1046,7 +1085,7 @@ Contains
    type(modelParam_t), intent(in)            :: m0 ! current model
    type(modelParam_t), intent(in)            :: h  ! search direction
    real(kind=prec), intent(inout)            :: alpha ! step size
-   type(modelParam_t), intent(inout)         :: mHat 
+   type(modelParam_t), intent(inout)         :: mHat
    real(kind=prec), intent(inout)            :: f  ! penalty function
    type(modelParam_t), intent(inout)         :: grad ! function gradient
    real(kind=prec), intent(out)              :: rms
@@ -1055,7 +1094,7 @@ Contains
    type(solnVectorMTX_t), intent(inout)      :: eAll
    ! local variables
    real(kind=prec)                 :: alpha_1,alpha_i,alpha_j,mNorm
-   real(kind=prec)                 :: alpha_l,alpha_r !left/right bound 
+   real(kind=prec)                 :: alpha_l,alpha_r !left/right bound
    logical                         :: starting_guess
    integer                         :: ibracket
    real(kind=prec)                 :: eps,k,c,c2,a,b,q1,q2,q3
@@ -1065,7 +1104,7 @@ Contains
    type(solnVectorMTX_t)           :: eAll_1
    character(100)                  :: logFile
 
-   ! parameters 
+   ! parameters
    c = iterControl%c ! ensures sufficient decrease
    c2 = iterControl%c2 ! ensures culvature condition
    !k = iterControl%alpha_k
@@ -1076,13 +1115,13 @@ Contains
    niter = 0
    mHat_0 = mHat
    f_0 = f
-   starting_guess = .false. 
+   starting_guess = .false.
 
    ! rescale the search direction
    ! h_dot_h = dotProd(h,h)
    ! h = scMult_modelParam(ONE/sqrt(h_dot_h),h)
 
-   ! g_0 is the directional derivative of our line search function 
+   ! g_0 is the directional derivative of our line search function
    ! f'(0) = (df/dm).dot.h
    g_0 = dotProd(grad,h)
 
@@ -1098,14 +1137,14 @@ Contains
    call linComb(ONE,mHat_0,alpha_1,h,mHat_1)
    call func(lambda,d,m0,mHat_1,f_1,mNorm_1,dHat_1,eAll_1,rms_1)
    call printf('STARTLS',lambda,alpha_1,f_1,mNorm_1,rms_1)
-   call printf('STARTLS',lambda,alpha_1,f_1,mNorm_1,rms_1,logFile)
+   call logprintf('STARTLS',lambda,alpha_1,f_1,mNorm_1,rms_1,logFile)
    niter = niter + 1
 
    if (f_1 - f_0 >= LARGE_REAL) then
    ! oops, we are pushing too far away
-       write(ioLog,'(a40)') "Try a smaller starting value of alpha ('Initial search step in model units' in InvCtrl file)"
+       call logLine('Try a smaller starting value of alpha', logFile)
        write(*,'(a40)') "Try a smaller starting value of alpha ('Initial search step in model units' in InvCtrl file)"
-       write(ioLog,'(a10)') 'Exiting...'
+       call logLine('Exiting...', logFile)
        write(*,'(a10)') 'Exiting...'
        call ModEM_abort()
    end if
@@ -1116,7 +1155,7 @@ Contains
    b = g_0*(alpha_1**2)
    alpha = - b/a
    ! if the curvature is -ve, there is no minimum; take the initial guess
-   if (a < 0) then ! upside down parabola 
+   if (a < 0) then ! upside down parabola
        starting_guess = .true.
        alpha = alpha_1
        dHat = dHat_1
@@ -1127,7 +1166,7 @@ Contains
        ! compute the gradient and exit
        call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
        write(*,'(a45)') 'Quadratic has no minimum, exiting line search'
-       write(ioLog,'(a45)') 'Quadratic has no minimum, exiting line search'
+       call logLine('Quadratic has no minimum, exiting line search', logFile)
        call deall_dataVectorMTX(dHat_1)
        call deall_modelParam(mHat_0)
        call deall_modelParam(mHat_1)
@@ -1138,12 +1177,12 @@ Contains
    call linComb(ONE,mHat_0,alpha,h,mHat)
    call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
    call printf('QUADLS',lambda,alpha,f,mNorm,rms)
-   call printf('QUADLS',lambda,alpha,f,mNorm,rms,logFile)
+   call logprintf('QUADLS',lambda,alpha,f,mNorm,rms,logFile)
    niter = niter + 1
    ! check whether the solution satisfies the sufficient decrease condition
-   ! Strong Wolfe's condition needs the gradient 
+   ! Strong Wolfe's condition needs the gradient
    ! well, we are going to calculate it anyway - so why don't we do it now?
-   if (f <= f_1) then 
+   if (f <= f_1) then
        call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
        g_1 = dotProd(grad, h)
        write(*,'(a29,es12.5)',advance='no') '    GRAD: computed, with g0=',g_0
@@ -1151,7 +1190,7 @@ Contains
        write(ioLog,'(a29,es12.5)',advance='no') '    GRAD: computed, with g0=',g_0
        write(ioLog,'(a4,es12.5)') ' g1=',g_1
        ! Note we test the Strong Wolfe's condition: Armijio's rule and
-       ! curvature condition 
+       ! curvature condition
        if ((f <= f_0 + c * alpha * g_0).and.(abs(g_1) <= c2*abs(g_0))) then
            write(*,'(a53)') 'Strong Wolfe Condition satisfied, exiting line search'
            write(ioLog,'(a53)') 'Strong Wolfe Condition satisfied, exiting line search'
@@ -1160,9 +1199,9 @@ Contains
            call deall_modelParam(mHat_1)
            call deall_solnVectorMTX(eAll_1)
            return
-       else 
-           !ooops, we missed the Strong Wolfe's condtion (for one reason or 
-           !the other 
+       else
+           !ooops, we missed the Strong Wolfe's condtion (for one reason or
+           !the other
            if ((alpha_r-alpha_l)*g_1<0) then
                ! update the left boundary for alpha
                alpha_l = alpha
@@ -1171,16 +1210,16 @@ Contains
                alpha_r = alpha
            endif
        endif
-   else 
+   else
        if (f_1 < f_0) then! is the initial making any progress?
-           ! Test if the initial guess is good for Strong Wolfe condition 
+           ! Test if the initial guess is good for Strong Wolfe condition
            call gradient(lambda,d,m0,mHat_1,grad,dHat_1,eAll_1)
-           g_1 = dotProd(grad, h) 
+           g_1 = dotProd(grad, h)
            write(*,'(a29,es12.5)',advance='no') '    GRAD: computed, with g0=',g_0
            write(*,'(a4,es12.5)') ' g1=',g_1
            write(ioLog,'(a29,es12.5)',advance='no') '    GRAD: computed, with g0=',g_0
            write(ioLog,'(a4,es12.5)') ' g1=',g_1
-           if ((f_1 <= f_0 + c * alpha_1 * g_0).and.(abs(g_1) <= c2*abs(g_0))) then 
+           if ((f_1 <= f_0 + c * alpha_1 * g_0).and.(abs(g_1) <= c2*abs(g_0))) then
                write(*,'(a53)') 'Strong Wolfe Condition satisfied, exiting line search'
                write(ioLog,'(a53)') 'Strong Wolfe Condition satisfied, exiting line search'
                starting_guess = .true.
@@ -1197,8 +1236,8 @@ Contains
                return
            endif
        else
-           !ooops, we missed the Strong Wolfe's condtion (for one reason or 
-           !the other 
+           !ooops, we missed the Strong Wolfe's condtion (for one reason or
+           !the other
            if ((alpha_r-alpha_l)*g_1<0) then
                ! update the left boundary for alpha
                alpha_l = alpha_1
@@ -1222,7 +1261,7 @@ Contains
    ! It is also possible that both f_1 and f are worse than the starting value!
    ! Then, take whichever is smaller. Ideally, want to decrease the tolerance
    ! for gradient computations if this happens.
-   ! 
+   !
    ! it is unlikely, but also possible that we used a far-too-large alpha value
        if (f_1 < f) then ! pick the less-bad solution
            starting_guess = .true.
@@ -1254,7 +1293,7 @@ Contains
                write(ioLog,'(a35)') 'using default value to bracket...'
                alpha = sqrt(alpha_l*alpha_r)
            else
-               if (b<=R_ZERO) then ! fit cubic 
+               if (b<=R_ZERO) then ! fit cubic
                    alpha = (- b + sqrt(b*b - 3.0*a*g_0))/(3.0*a)
                else
                    alpha = -g_0/(b+sqrt(b*b - 3.0*a*g_0))
@@ -1264,11 +1303,11 @@ Contains
            call linComb(ONE,mHat_0,alpha,h,mHat)
            call func(lambda,d,m0,mHat,f,mNorm,dHat,eAll,rms)
            call printf('CUBICLS',lambda,alpha,f,mNorm,rms)
-           call printf('CUBICLS',lambda,alpha,f,mNorm,rms,logFile)
+           call logprintf('CUBICLS',lambda,alpha,f,mNorm,rms,logFile)
            niter = niter + 1
            ibracket = ibracket + 1
            call gradient(lambda,d,m0,mHat,grad,dHat,eAll)
-           g_1 = dotProd(grad, h) 
+           g_1 = dotProd(grad, h)
            write(*,'(a29,es12.5)',advance='no') '    GRAD: computed, with g0=',g_0
            write(*,'(a4,es12.5)') ' g1=',g_1
            write(ioLog,'(a29,es12.5)',advance='no') '    GRAD: computed, with g0=',g_0
@@ -1304,7 +1343,7 @@ Contains
                write(ioLog,'(a69)') 'Warning: exiting bracketing since the it has iterated too many times!'
                if (f < f_1) then
                    starting_guess = .false.
-               else 
+               else
                    starting_guess = .true.
                    call gradient(lambda,d,m0,mHat_1,grad,dHat_1,eAll_1)
                endif
@@ -1316,7 +1355,7 @@ Contains
                write(ioLog,'(a69)') 'Warning: exiting cubic search since the function no longer decreases!'
                if (f < f_1) then
                    starting_guess = .false.
-               else 
+               else
                    starting_guess = .true.
                    call gradient(lambda,d,m0,mHat_1,grad,dHat_1,eAll_1)
                endif
@@ -1339,5 +1378,86 @@ Contains
 
   end subroutine lineSearchWolfe
   !**********************************************************************
+
+  !----------------------------------------------------------------------
+  ! Writes a timestamped message to ioLog: [YY-MM-DD HH:MM:SS] msg
+  subroutine logLine(msg, logfile)
+     character(*), intent(in)      :: msg
+     character(*), intent(in), optional  :: logfile
+     integer  :: io_unit, ios
+     logical  :: opened
+     character(len=8)  :: date_string
+     character(len=10):: time_string
+
+     if (present(logfile)) then
+        io_unit = ioLog
+        inquire (file=logfile, opened=opened)
+        if (.not. opened) then
+           open (unit=ioLog, file=logfile, status='unknown', position='append', iostat=ios)
+        end if
+     else
+        io_unit = 6
+     end if
+
+     call date_and_time(date=date_string, time=time_string)
+
+     write (io_unit, '(a22,a)', advance='no') '['// &
+        date_string(1:4)//'-'//date_string(5:6)//'-'//date_string(7:8)//' '// &
+        time_string(1:2)//':'//time_string(3:4)//':'//time_string(5:6)//'] '
+     write (io_unit, '(a)') trim(msg)
+
+     ! flush(io_unit): this has the effect of flushing the buffer
+     if (present(logfile)) then
+        close (io_unit)
+        open (unit=ioLog, file=logfile, status='old', position='append', iostat=ios)
+     end if
+
+  end subroutine logLine
+
+  !**********************************************************************
+  subroutine logprintf(comment, lambda, alpha, f, mNorm, rms, logfile)
+
+     ! Compute the full penalty functional F
+     ! Also output the predicted data and the EM solution
+     ! that can be used for evaluating the gradient
+     ! Assuming that the model norm is already scaled by Nmodel
+
+     character(*), intent(in)               :: comment
+     real(kind=prec), intent(in)  :: lambda, alpha, f, mNorm, rms
+     character(*), intent(in), optional        :: logfile
+     integer  :: io_unit, ios
+     logical  :: opened
+     character(len=8)  :: date_string
+     character(len=10):: time_string
+
+     if (present(logfile)) then
+        io_unit = ioLog
+        inquire (file=logfile, opened=opened)
+        if (.not. opened) then
+           open (unit=ioLog, file=logfile, status='unknown', position='append', iostat=ios)
+        end if
+     else
+        io_unit = 6
+     end if
+
+     call date_and_time(date=date_string, time=time_string)
+
+     write (io_unit, '(a22,a)', advance='no') '['// &
+        date_string(1:4)//'-'//date_string(5:6)//'-'//date_string(7:8)//' '// &
+        time_string(1:2)//':'//time_string(3:4)//':'//time_string(5:6)//'] '
+     write (io_unit, '(a10)', advance='no') trim(comment)//':'
+     write (io_unit, '(a3,es12.6)', advance='no') ' f=', f
+     write (io_unit, '(a4,es12.6)', advance='no') ' m2=', mNorm
+     write (io_unit, '(a5,f11.6)', advance='no') ' rms=', rms
+     write (io_unit, '(a8,es12.6)', advance='no') ' lambda=', lambda
+     write (io_unit, '(a7,es12.6)') ' alpha=', alpha
+
+     ! flush(io_unit): this has the effect of flushing the buffer
+     if (present(logfile)) then
+        close (io_unit)
+        open (unit=ioLog, file=logfile, status='old', position='append', iostat=ios)
+     end if
+
+  end subroutine logprintf
 
 end module NLCG
